@@ -9,34 +9,15 @@ class Cell {
 class ChessEngine {
   Piece[][] board;
   int cols, rows;
-  String turn;               // "ham" or "tobis"
-  Piece selected;            // currently selected piece (belongs to 'turn')
-  ArrayList<Cell> legal;     // legal moves for 'selected'
-  
-    // --- Tuning knobs (top of ChessEngine) ---
-  final int QDEPTH_MAX   = 6;   // max quiescence plies
-  final int QCAPHARD_CAP = 12;  // max captures per node
-  final int QEVASION_CAP = 16;  // max evasions when in check
-  final float BAD_TRADE_MARGIN = 1.0f; // skip captures that hang material (in piece-value units)
-  
-  
-  // Helper: returns only capture moves for p, ordered MVV-LVA
-  ArrayList<Cell> captureMovesOrdered(Piece p) {
-    ArrayList<Cell> all = generateLegalMovesFiltered(p);
-    ArrayList<Cell> caps = new ArrayList<Cell>();
-    for (Cell mv : all) {
-      if (board[mv.c][mv.r] != null) caps.add(mv);
-    }
-    caps.sort(new Comparator<Cell>() {
-      public int compare(Cell a, Cell b) {
-        Piece va = board[a.c][a.r], vb = board[b.c][b.r];
-        float sa = (va != null ? pieceValue(va.type) : 0) - 0.1f * pieceValue(p.type);
-        float sb = (vb != null ? pieceValue(vb.type) : 0) - 0.1f * pieceValue(p.type);
-        return Float.compare(sb, sa); // higher MVV-LVA first
-      }
-    });
-    return caps;
-  }
+  String turn; // "ham" or "tobis"
+  Piece selected;
+  ArrayList<Cell> legal;
+
+  // --- Quiescence search tuning ---
+  final int QDEPTH_MAX = 6;
+  final int QCAPHARD_CAP = 12;
+  final int QEVASION_CAP = 16;
+  final float BAD_TRADE_MARGIN = 1.0f;
 
   ChessEngine(Piece[][] board, int cols, int rows, String startTurn){
     this.board = board;
@@ -47,92 +28,46 @@ class ChessEngine {
     this.legal = new ArrayList<Cell>();
   }
 
-  // Public API ------------------------------------------------
+  // --- Basic interface ---
   String getTurn(){ return turn; }
   Piece getSelected(){ return selected; }
   ArrayList<Cell> getLegal(){ return legal; }
 
-  // Call when the UI detects a click on a board square
-  // Returns: "selected", "moved", "deselected", or "noop"
+  // Handle user click (select/move/deselect)
   String handleClick(int c, int r){
     if (!inBounds(c,r)) return "noop";
-
     Piece p = board[c][r];
 
-    // No selection yet
     if (selected == null){
-      if (p != null){
-        if (p.side.equals(turn)){
-          select(p);
-          return "selected";
-        } else {
-          // clicked enemy with no selection -> preview in your UI if you want
-          return "noop";
-        }
-      } else {
-        // empty click with no selection
-        return "noop";
+      if (p != null && p.side.equals(turn)){
+        select(p);
+        return "selected";
       }
+      return "noop";
     }
 
-    // Clicking the selected piece again -> deselect
-    if (p == selected){
-      clearSelection();
-      return "deselected";
-    }
+    if (p == selected){ clearSelection(); return "deselected"; }
+    if (isInLegal(c,r)){ moveSelectedTo(c,r); clearSelection(); swapTurn(); return "moved"; }
+    if (p != null && p.side.equals(turn)){ select(p); return "selected"; }
 
-    // Try to move to clicked square if it's legal
-    if (isInLegal(c,r)){
-      moveSelectedTo(c,r);
-      clearSelection();
-      swapTurn();
-      return "moved";
-    }
-
-    // Otherwise: if you clicked another friendly piece, switch selection
-    if (p != null && p.side.equals(turn)){
-      select(p);
-      return "selected";
-    }
-
-    // clicked empty or enemy not in legal squares -> keep selection
     return "noop";
   }
 
-  // Recompute legal moves for a piece that belongs to 'turn'
-  void select(Piece p){
-    selected = p;
-    legal = generateLegalMovesFiltered(p);
-  }
+  void select(Piece p){ selected = p; legal = generateLegalMovesFiltered(p); }
+  void clearSelection(){ selected = null; legal.clear(); }
 
-  void clearSelection(){
-    selected = null;
-    legal.clear();
-  }
-
-  // ----------------------------------------------------------
-
-  boolean inBounds(int c, int r){
-    return c >= 0 && c < cols && r >= 0 && r < rows;
-  }
-
-  boolean isInLegal(int c, int r){
-    for (Cell cell : legal) if (cell.c == c && cell.r == r) return true;
-    return false;
-  }
-
+  boolean inBounds(int c, int r){ return c >= 0 && c < cols && r >= 0 && r < rows; }
+  boolean isInLegal(int c, int r){ for (Cell cell : legal) if (cell.c==c && cell.r==r) return true; return false; }
   void swapTurn(){ turn = turn.equals("ham") ? "tobis" : "ham"; }
 
-  // Actually commit a move on the live board
+  // Commit move
   void moveSelectedTo(int tc, int tr){
     if (selected == null) return;
-    // capture if any
     board[tc][tr] = selected;
     board[selected.col][selected.row] = null;
-    selected.col = tc;
-    selected.row = tr;
+    selected.col = tc; selected.row = tr;
 
-    // Pawn promotion hook (uses your existing images/types)
+    // Pawn promotion
     if (selected.type.equals("pawn")){
       if ((selected.side.equals("ham") && selected.row == 0) ||
           (selected.side.equals("tobis") && selected.row == rows-1)){
@@ -143,8 +78,7 @@ class ChessEngine {
     }
   }
 
-  // ------------- Move generation & check filtering ----------
-
+  // --- Move generation ---
   ArrayList<Cell> generatePseudoMoves(Piece p){
     ArrayList<Cell> out = new ArrayList<Cell>();
     String side = p.side;
@@ -152,161 +86,129 @@ class ChessEngine {
     if (p.type.equals("knight")){
       int[][] d = {{2,1},{1,2},{-1,2},{-2,1},{-2,-1},{-1,-2},{1,-2},{2,-1}};
       for (int[] m : d){
-        int nc = p.col + m[0], nr = p.row + m[1];
-        if (inBounds(nc,nr) && (board[nc][nr] == null || !board[nc][nr].side.equals(side))){
+        int nc = p.col+m[0], nr=p.row+m[1];
+        if (inBounds(nc,nr) && (board[nc][nr]==null || !board[nc][nr].side.equals(side)))
           out.add(new Cell(nc,nr));
-        }
       }
     }
 
     if (p.type.equals("bishop") || p.type.equals("queen")){
-      slide(out, p,  1,  1);
-      slide(out, p,  1, -1);
-      slide(out, p, -1,  1);
-      slide(out, p, -1, -1);
+      slide(out,p,1,1); slide(out,p,1,-1); slide(out,p,-1,1); slide(out,p,-1,-1);
     }
-
     if (p.type.equals("rook") || p.type.equals("queen")){
-      slide(out, p,  1,  0);
-      slide(out, p, -1,  0);
-      slide(out, p,  0,  1);
-      slide(out, p,  0, -1);
+      slide(out,p,1,0); slide(out,p,-1,0); slide(out,p,0,1); slide(out,p,0,-1);
     }
 
     if (p.type.equals("king")){
       int[][] d = {{1,1},{1,0},{1,-1},{0,1},{0,-1},{-1,1},{-1,0},{-1,-1}};
       for (int[] m : d){
-        int nc = p.col + m[0], nr = p.row + m[1];
-        if (inBounds(nc,nr) && (board[nc][nr] == null || !board[nc][nr].side.equals(side))){
+        int nc=p.col+m[0], nr=p.row+m[1];
+        if (inBounds(nc,nr) && (board[nc][nr]==null || !board[nc][nr].side.equals(side)))
           out.add(new Cell(nc,nr));
-        }
       }
-      // (Castling not implemented here)
     }
 
     if (p.type.equals("pawn")){
       int dir = side.equals("ham") ? -1 : 1;
-      int startRow = side.equals("ham") ? rows - 2 : 1;
+      int startRow = side.equals("ham") ? rows-2 : 1;
 
-      // forward 1
       int f1c = p.col, f1r = p.row + dir;
-      if (inBounds(f1c,f1r) && board[f1c][f1r] == null){
+      if (inBounds(f1c,f1r) && board[f1c][f1r]==null){
         out.add(new Cell(f1c,f1r));
-
-        // forward 2 from start if clear
         int f2r = p.row + 2*dir;
-        if (p.row == startRow && inBounds(f1c,f2r) && board[f1c][f2r] == null){
+        if (p.row==startRow && inBounds(f1c,f2r) && board[f1c][f2r]==null)
           out.add(new Cell(f1c,f2r));
-        }
       }
-      // captures
+
       for (int dc=-1; dc<=1; dc+=2){
-        int nc = p.col + dc, nr = p.row + dir;
-        if (inBounds(nc,nr) && board[nc][nr] != null && !board[nc][nr].side.equals(side)){
+        int nc=p.col+dc, nr=p.row+dir;
+        if (inBounds(nc,nr) && board[nc][nr]!=null && !board[nc][nr].side.equals(side))
           out.add(new Cell(nc,nr));
-        }
       }
-      // (En passant not implemented)
     }
 
     return out;
   }
 
   void slide(ArrayList<Cell> out, Piece p, int dc, int dr){
-    int nc = p.col + dc, nr = p.row + dr;
+    int nc=p.col+dc, nr=p.row+dr;
     while (inBounds(nc,nr)){
-      if (board[nc][nr] == null){
-        out.add(new Cell(nc,nr));
-      } else {
+      if (board[nc][nr]==null) out.add(new Cell(nc,nr));
+      else {
         if (!board[nc][nr].side.equals(p.side)) out.add(new Cell(nc,nr));
         break;
       }
-      nc += dc; nr += dr;
+      nc+=dc; nr+=dr;
     }
   }
 
-  // Filter pseudo legal moves by removing those that leave own king in check
+  // --- Check filtering ---
   ArrayList<Cell> generateLegalMovesFiltered(Piece p){
     ArrayList<Cell> raw = generatePseudoMoves(p);
     ArrayList<Cell> filtered = new ArrayList<Cell>();
-
     for (Cell mv : raw){
-      // do-move
       Piece captured = board[mv.c][mv.r];
-      int oc = p.col, or = p.row;
-
-      board[mv.c][mv.r] = p;
-      board[oc][or] = null;
-      p.col = mv.c; p.row = mv.r;
-
-      boolean ok = !isKingInCheck(p.side);
-
-      // undo-move
-      p.col = oc; p.row = or;
-      board[oc][or] = p;
-      board[mv.c][mv.r] = captured;
-
+      int oc=p.col, or=p.row;
+      board[mv.c][mv.r]=p; board[oc][or]=null;
+      p.col=mv.c; p.row=mv.r;
+      boolean ok=!isKingInCheck(p.side);
+      p.col=oc; p.row=or;
+      board[oc][or]=p; board[mv.c][mv.r]=captured;
       if (ok) filtered.add(mv);
     }
-
     return filtered;
   }
 
   boolean isKingInCheck(String side){
-    Cell k = findKing(side);
-    if (k == null) return false; // no king found -> treat as not in check
-    return squareAttackedBy(k.c, k.r, opposite(side));
+    Cell k=findKing(side);
+    if (k==null) return false;
+    return squareAttackedBy(k.c,k.r,opposite(side));
   }
 
   Cell findKing(String side){
-    for (int c=0;c<cols;c++){
+    for (int c=0;c<cols;c++)
       for (int r=0;r<rows;r++){
-        Piece p = board[c][r];
-        if (p != null && p.side.equals(side) && p.type.equals("king")){
+        Piece p=board[c][r];
+        if (p!=null && p.side.equals(side) && p.type.equals("king"))
           return new Cell(c,r);
-        }
       }
-    }
     return null;
   }
 
   String opposite(String s){ return s.equals("ham") ? "tobis" : "ham"; }
 
   boolean squareAttackedBy(int tc, int tr, String attackerSide){
-    // Knights
-    int[][] kn = {{2,1},{1,2},{-1,2},{-2,1},{-2,-1},{-1,-2},{1,-2},{2,-1}};
-    for (int[] m : kn){
-      int c = tc + m[0], r = tr + m[1];
+    // Knight
+    int[][] kn={{2,1},{1,2},{-1,2},{-2,1},{-2,-1},{-1,-2},{1,-2},{2,-1}};
+    for (int[] m:kn){
+      int c=tc+m[0],r=tr+m[1];
       if (inBounds(c,r)){
-        Piece p = board[c][r];
-        if (p != null && p.side.equals(attackerSide) && p.type.equals("knight")) return true;
+        Piece p=board[c][r];
+        if (p!=null && p.side.equals(attackerSide) && p.type.equals("knight")) return true;
       }
     }
-    // King (adjacent)
-    int[][] kg = {{1,1},{1,0},{1,-1},{0,1},{0,-1},{-1,1},{-1,0},{-1,-1}};
-    for (int[] m : kg){
-      int c = tc + m[0], r = tr + m[1];
+    // King
+    int[][] kg={{1,1},{1,0},{1,-1},{0,1},{0,-1},{-1,1},{-1,0},{-1,-1}};
+    for (int[] m:kg){
+      int c=tc+m[0],r=tr+m[1];
       if (inBounds(c,r)){
-        Piece p = board[c][r];
-        if (p != null && p.side.equals(attackerSide) && p.type.equals("king")) return true;
+        Piece p=board[c][r];
+        if (p!=null && p.side.equals(attackerSide) && p.type.equals("king")) return true;
       }
     }
-    // Sliding: rook/queen (orthogonal)
-    if (rayHits(tc,tr, 1,0, attackerSide, "rook","queen")) return true;
-    if (rayHits(tc,tr,-1,0, attackerSide, "rook","queen")) return true;
-    if (rayHits(tc,tr, 0,1, attackerSide, "rook","queen")) return true;
-    if (rayHits(tc,tr, 0,-1,attackerSide, "rook","queen")) return true;
-
-    // Sliding: bishop/queen (diagonals)
-    if (rayHits(tc,tr, 1,1, attackerSide, "bishop","queen")) return true;
-    if (rayHits(tc,tr, 1,-1,attackerSide, "bishop","queen")) return true;
-    if (rayHits(tc,tr,-1,1, attackerSide, "bishop","queen")) return true;
-    if (rayHits(tc,tr,-1,-1,attackerSide, "bishop","queen")) return true;
-
-    // Pawns (they attack forward-diagonal toward their movement)
-    // If attackers are "ham", they move up (dir = -1), so they attack from r = tr+1
+    // Rook/Queen
+    if (rayHits(tc,tr,1,0,attackerSide,"rook","queen")) return true;
+    if (rayHits(tc,tr,-1,0,attackerSide,"rook","queen")) return true;
+    if (rayHits(tc,tr,0,1,attackerSide,"rook","queen")) return true;
+    if (rayHits(tc,tr,0,-1,attackerSide,"rook","queen")) return true;
+    // Bishop/Queen
+    if (rayHits(tc,tr,1,1,attackerSide,"bishop","queen")) return true;
+    if (rayHits(tc,tr,1,-1,attackerSide,"bishop","queen")) return true;
+    if (rayHits(tc,tr,-1,1,attackerSide,"bishop","queen")) return true;
+    if (rayHits(tc,tr,-1,-1,attackerSide,"bishop","queen")) return true;
+    // Pawns
     int dir = attackerSide.equals("ham") ? -1 : 1;
-    int pr = tr - dir; // pawn that could attack tc,tr would be one step backward relative to its attack
+    int pr = tr - dir;
     for (int dc=-1; dc<=1; dc+=2){
       int pc = tc + dc;
       if (inBounds(pc,pr)){
@@ -314,45 +216,37 @@ class ChessEngine {
         if (p != null && p.side.equals(attackerSide) && p.type.equals("pawn")) return true;
       }
     }
-
     return false;
   }
 
   boolean rayHits(int tc, int tr, int dc, int dr, String side, String t1, String t2){
-    int c = tc + dc, r = tr + dr;
-    while (inBounds(c,r)){
-      Piece p = board[c][r];
-      if (p != null){
-        if (p.side.equals(side) && (p.type.equals(t1) || p.type.equals(t2))) return true;
+    int c=tc+dc, r=tr+dr;
+    while(inBounds(c,r)){
+      Piece p=board[c][r];
+      if(p!=null){
+        if(p.side.equals(side)&&(p.type.equals(t1)||p.type.equals(t2))) return true;
         return false;
       }
-      c += dc; r += dr;
+      c+=dc; r+=dr;
     }
     return false;
   }
 
-  // Simple checkmate/stalemate helpers (optional use)
+  // Checkmate/Stalemate
   boolean noLegalMovesFor(String side){
-    for (int c=0;c<cols;c++){
+    for (int c=0;c<cols;c++)
       for (int r=0;r<rows;r++){
-        Piece p = board[c][r];
-        if (p != null && p.side.equals(side)){
-          if (generateLegalMovesFiltered(p).size() > 0) return false;
-        }
+        Piece p=board[c][r];
+        if (p!=null && p.side.equals(side) && generateLegalMovesFiltered(p).size()>0)
+          return false;
       }
-    }
     return true;
   }
 
-  boolean isCheckmate(String side){
-    return isKingInCheck(side) && noLegalMovesFor(side);
-  }
-
-  boolean isStalemate(String side){
-    return !isKingInCheck(side) && noLegalMovesFor(side);
-  }
-  // Simple evaluation function: sum of piece values
-// --- Phase weights (tuneable) ---
+  boolean isCheckmate(String side){ return isKingInCheck(side) && noLegalMovesFor(side); }
+  boolean isStalemate(String side){ return !isKingInCheck(side) && noLegalMovesFor(side); }
+  //evaluation
+// --- Phase weights ---
 final float TEMPO_BONUS = 0.10f;   // small nudge for side to move (helps initiative)
 final float BISHOP_PAIR = 0.30f;   // bishop pair bonus
 final float DOUBLED_PAWN = 0.18f;
@@ -365,7 +259,7 @@ final int   QCAPHARD_CAP_TUNED = 10;
 final int   QEVASION_CAP_TUNED = 12;
 final float BAD_TRADE_MARGIN_TUNED = 0.5f;
 
-// Call this once in your constructor after your constants are defined:
+// idk i got this online:
 void tuneQParams(){
   // only if you want to adopt the tighter settings:
   // (or just replace your top-level constants with these values)
@@ -379,7 +273,7 @@ void tuneQParams(){
 float evaluate() {
   // Material phase: pawns contribute little, majors a lot.
   int phase = 0, phaseMax = 0;
-  float matMid = 0, matEnd = 0; // separate buckets to blend positional terms
+  float matMid = 0, matEnd = 0;
 
   int hamBishops = 0, tobisBishops = 0;
   int hamKnightsDev = 0, tobisKnightsDev = 0;
@@ -443,6 +337,8 @@ float evaluate() {
   if (tobisBishops >= 2) { matMid += BISHOP_PAIR; matEnd += BISHOP_PAIR; }
   if (hamBishops   >= 2) { matMid -= BISHOP_PAIR; matEnd -= BISHOP_PAIR; }
 
+  //[Chess game weights got this on stack overflow]
+
   // Development & opening sanity (only meaningful early → scale by phaseBlend)
   float phaseBlend = clamp01(phase / max(1f, (float)phaseMax));   // 0..1 (more material → closer to 1)
   float openingWeight = phaseBlend;                               // 1 = opening, 0 = endgame
@@ -478,7 +374,7 @@ float evaluate() {
 
 
 
-// Helper: move ordering (captures first)
+// Helper: move ordering
 ArrayList<Cell> orderedMoves(Piece p) {
   ArrayList<Cell> moves = generateLegalMovesFiltered(p);
   final String side = p.side;
@@ -544,7 +440,7 @@ int moveScore(Piece p, Cell mv, String side, boolean opening){
 
 
 float quiescence(String side, float alpha, float beta, int qDepth) {
-  float stand = evaluate(); // tobis-positive
+  float stand = evaluate(); // tobis perspective
 
   // Stand-pat cut/raise bounds based on the side to move
   if (side.equals("tobis")) {
@@ -669,7 +565,7 @@ float minimax(String side, int depth, float alpha, float beta) {
 }
 
 
-// Make a deep copy of a board state for AI search
+// Make a deep copy of a board state for ches engine
 Piece[][] cloneBoard(Piece[][] original) {
   Piece[][] copy = new Piece[cols][rows];
   for (int c = 0; c < cols; c++) {
@@ -691,7 +587,7 @@ float clamp01(float x){ return x < 0 ? 0 : (x > 1 ? 1 : x); }
 // Dynamic PSQT for midgame: reward centralization & space; keep cheap math
 float psqtMid(Piece p, int c, int r, float cx, float cy){
   float dx = abs(c - cx), dy = abs(r - cy);
-  float dist = dx + dy;                // Manhattan distance to center
+  float dist = dx + dy; // Manhattan distance to center
   float centerBonus = (5f - dist) * 0.10f; // fades with size automatically
 
   float rankAdvance = 0;
@@ -709,7 +605,7 @@ float psqtMid(Piece p, int c, int r, float cx, float cy){
   return 0;
 }
 
-// Endgame PSQT: centralize king, push passed pawns; other pieces modestly central
+// Endgame: centralize king, push passed pawns; other pieces modestly central
 float psqtEnd(Piece p, int c, int r, float cx, float cy){
   float dx = abs(c - cx), dy = abs(r - cy);
   float center = (5f - (dx + dy)) * 0.06f;
@@ -805,6 +701,8 @@ boolean unblockedForwardPawn(String side, int file){
   int one = start + dir;
   return inBounds(file, one) && board[file][one] == null;
 }
+
+// [Pasted and modified from stack overflow]
 
 // Pawn structure over all files
 float pawnStructureScore(int[] pawnsInFile, String side){
