@@ -105,14 +105,14 @@ for (int i = 0; i < cols; i++) {
 void draw() {
   background(255);
 
-  // --- black background behind board ---
+  // black background behind board
   float boardW = cols * (tileSize + gap) - gap;
   float boardH = rows * (tileSize + gap) - gap;
   fill(0);
   noStroke();
   rect(gridX - gap, gridY - gap, boardW + 2*gap, boardH + 2*gap);
 
-  // --- draw tiles (but no pieces yet) ---
+  //draw tiles
   for (int i = 0; i < cols; i++) {
     for (int j = 0; j < rows; j++) {
       tiles[i][j].update();
@@ -120,7 +120,7 @@ void draw() {
     }
   }
 
-  // --- draw pieces on top of tiles ---
+  //draw pieces on top of tiles
   for (int i = 0; i < cols; i++) {
     for (int j = 0; j < rows; j++) {
       if (pieces[i][j] != null) {
@@ -129,7 +129,7 @@ void draw() {
     }
   }
 
-  // --- if AI finished thinking, apply the move ---
+  //if AI finished thinking, apply the move
   if (!aiThinking && aiResult != null) {
     engine.selected = aiResult.piece;
     engine.moveSelectedTo(aiResult.c, aiResult.r);
@@ -199,7 +199,7 @@ void mousePressed() {
     return;
   }
 
-  // --- A PIECE IS SELECTED (your own) ---
+  // --- A PIECE IS SELECTED HAMSIDE ---
   if (selectedPiece.col == clickedCol && selectedPiece.row == clickedRow) {
     // clicking same piece deselects
     deselectAll();
@@ -235,7 +235,7 @@ void mousePressed() {
     return;
   }
 
-  // Clicked elsewhere with a piece selected
+  //clicked elsewhere with a piece selected
   deselectAll();
   if (p != null && p.side.equals(currentTurn)) {
     selectPiece(p);
@@ -478,16 +478,15 @@ void previewEnemy(Piece p) {
     return;
   }
 
-  deselectAll();        // clear old highlights first
+  deselectAll(); // clear old highlights first
   previewedEnemy = p;
   lightHighlightMoves(p);
 }
 
 
 void lightUpOnly(Tile t) {
-  // Light the tile but do NOT move it up
+  // Light the tile but not hover it
   t.highlighted = true;
-  // (intentionally not touching targetOffset)
 }
 
 
@@ -681,7 +680,7 @@ class Piece {
     else if (type.equals("queen")&&side.equals("tobis")) scaleFactor = 2.15;
     else if (type.equals("queen")&&side.equals("ham")) scaleFactor = 2;
     else if (type.equals("king")) scaleFactor = 1.15;
-    else scaleFactor = 0.9; // default (e.g. king or unknown)
+    else scaleFactor = 0.9; // default size
   }
   
   void update() {
@@ -812,7 +811,7 @@ void computeTobisMove() {
 
       ArrayList<Cell> leg = tempEngine.generateLegalMovesFiltered(p);
       for (Cell mv : leg) {
-        // --- make move on the copy ---
+        // make move on the copy
         Piece captured = boardCopy[mv.c][mv.r];
         int oc = p.col, or = p.row;
         boardCopy[oc][or] = null;
@@ -821,7 +820,7 @@ void computeTobisMove() {
 
         float val = tempEngine.minimax("ham", searchDepth - 1, -1e9, 1e9);
 
-        // --- undo ---
+        // undo
         p.col = oc; p.row = or;
         boardCopy[oc][or] = p;
         boardCopy[mv.c][mv.r] = captured;
